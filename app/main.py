@@ -1,4 +1,5 @@
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone ,timedelta
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,11 +8,11 @@ from fastapi import FastAPI, Depends, UploadFile
 from fastapi import HTTPException
 from fastapi.responses import FileResponse as FastAPIFileResponse
 from sqlalchemy.orm import Session
-
-from app.database import get_db
+from sqlalchemy import select
+from app.database import get_db, SessionLocal
 from app.models import File
 from app.schemas import FileCreate, FileResponse
-
+from apscheduler.schedulers.background import BackgroundScheduler
 app = FastAPI(title="FileAway API")
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -80,3 +81,36 @@ def download_file(share_token: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="File not found")
 
     return FastAPIFileResponse(path = file_path, filename=file.original_name)
+
+def cleanup_expired_files(db: Session = Depends(get_db)):
+    now = datetime.now(timezone.utc)
+    expired_files = db.query(File).filter(File.expires_at <= now).all()
+
+    for file in expired_files:
+        file_path = UPLOAD_DIR / file.stored_name
+        if file_path.is_file():
+            file_path.unlink()
+        db.delete(file)
+
+    db.commit()
+
+def run_cleanup():
+    # print("Cleanup job is running")
+    db = SessionLocal()
+    try:
+        cleanup_expired_files(db)
+    finally:
+        db.close()
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(run_cleanup, "interval", hours=1)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler.start()
+    try:
+        yield
+    finally:
+        scheduler.shutdown()
+
+app = FastAPI(title="FileAway API", lifespan=lifespan)
