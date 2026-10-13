@@ -10,7 +10,9 @@ class File(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     original_name: Mapped[str] = mapped_column(String(255))
     stored_name: Mapped[str] = mapped_column(String(255), unique=True)
+    share_token: Mapped[str] = mapped_column(String(255), unique=True)
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc)
     )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -1,5 +1,6 @@
+import uuid
+from datetime import datetime, timezone ,timedelta
 from datetime import datetime, timezone
-
 from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 
@@ -23,7 +24,8 @@ def create_file(file: FileCreate, db: Session = Depends(get_db)):
     new_file = File(
         original_name=file.original_name,
         stored_name=file.stored_name,
-        uploaded_at=datetime.now(timezone.utc),
+        share_token = str(uuid.uuid4()),
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
     )
     db.add(new_file)
     db.commit()
