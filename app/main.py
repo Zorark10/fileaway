@@ -56,23 +56,36 @@ async def upload_file(uploaded_file: UploadFile = FastAPIFile(...),
                       db: Session = Depends(get_db)):
     stored_name = str(uuid.uuid4())
     file_path = UPLOAD_DIR / stored_name
-    content = await uploaded_file.read(MAX_FILE_SIZE + 1)
+    file_size = 0
 
-    if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File too large")
+    try:
+        with file_path.open("wb") as destination:
+            while True:
+                chunk = await uploaded_file.read(1024 * 1024)
 
-    with file_path.open(mode="wb") as destination:
-        destination.write(content)
+                if not chunk:
+                    break
 
-    # with file_path.open(mode="wb") as destination:
-    #     destination.write(await uploaded_file.read())
+                file_size += len(chunk)
+
+                if file_size > MAX_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="File too large",
+                    )
+
+                destination.write(chunk)
+
+    except Exception:
+        file_path.unlink(missing_ok=True)
+        raise
 
     new_file = File(
         original_name = Path(uploaded_file.filename or "unnamed").name,
         stored_name = stored_name,
         share_token = str(uuid.uuid4()),
         content_type=uploaded_file.content_type or "application/octet-stream",
-        file_size=len(content),
+        file_size=file_size,
         expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
     )
     db.add(new_file)
