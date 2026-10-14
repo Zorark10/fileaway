@@ -21,3 +21,6 @@ class FileResponse(BaseModel):
     @field_serializer("uploaded_at", "expires_at")
     def format_uploaded_at(self, value: datetime) -> str:
         return value.strftime("%d-%m-%Y %H:%M:%S")
+
+class FileUploadResponse(FileResponse):
+    share_url: str

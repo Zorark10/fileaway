@@ -12,6 +12,7 @@ from app.database import get_db, SessionLocal
 from app.models import File
 from app.schemas import FileCreate, FileResponse
 from apscheduler.schedulers.background import BackgroundScheduler
+from app.schemas import FileCreate, FileResponse, FileUploadResponse
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -50,7 +51,7 @@ def create_file(file: FileCreate, db: Session = Depends(get_db)):
     db.refresh(new_file)
     return new_file
 
-@app.post("/upload", response_model=FileResponse)
+@app.post("/upload", response_model=FileUploadResponse)
 async def upload_file(uploaded_file: UploadFile = FastAPIFile(...),
                       db: Session = Depends(get_db)):
     stored_name = str(uuid.uuid4())
@@ -77,7 +78,17 @@ async def upload_file(uploaded_file: UploadFile = FastAPIFile(...),
     db.add(new_file)
     db.commit()
     db.refresh(new_file)
-    return new_file
+    return FileUploadResponse(
+        id=new_file.id,
+        original_name=new_file.original_name,
+        stored_name=new_file.stored_name,
+        share_token=new_file.share_token,
+        content_type=new_file.content_type,
+        file_size=new_file.file_size,
+        uploaded_at=new_file.uploaded_at,
+        expires_at=new_file.expires_at,
+        share_url=f"http://127.0.0.1:8000/files/share/{new_file.share_token}",
+    )
 
 @app.get("/files/share/{share_token}")
 def download_file(share_token: str, db: Session = Depends(get_db)):
