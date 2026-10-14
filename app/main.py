@@ -8,16 +8,26 @@ from fastapi import FastAPI, Depends, UploadFile
 from fastapi import HTTPException
 from fastapi.responses import FileResponse as FastAPIFileResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import select
 from app.database import get_db, SessionLocal
 from app.models import File
 from app.schemas import FileCreate, FileResponse
 from apscheduler.schedulers.background import BackgroundScheduler
-app = FastAPI(title="FileAway API")
+
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 MAX_FILE_SIZE = 100 * 1024 * 1024
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler.start()
+    try:
+        yield
+    finally:
+        scheduler.shutdown()
+
+app = FastAPI(title="FileAway API", lifespan=lifespan)
+
 @app.get("/")
 def home():
     return {"message": "FileAway API is running"}
@@ -53,13 +63,15 @@ async def upload_file(uploaded_file: UploadFile = FastAPIFile(...),
     with file_path.open(mode="wb") as destination:
         destination.write(content)
 
-    with file_path.open(mode="wb") as destination:
-        destination.write(await uploaded_file.read())
+    # with file_path.open(mode="wb") as destination:
+    #     destination.write(await uploaded_file.read())
 
     new_file = File(
         original_name = Path(uploaded_file.filename or "unnamed").name,
         stored_name = stored_name,
         share_token = str(uuid.uuid4()),
+        content_type=uploaded_file.content_type or "application/octet-stream",
+        file_size=len(content),
         expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
     )
     db.add(new_file)
@@ -82,7 +94,7 @@ def download_file(share_token: str, db: Session = Depends(get_db)):
 
     return FastAPIFileResponse(path = file_path, filename=file.original_name)
 
-def cleanup_expired_files(db: Session = Depends(get_db)):
+def cleanup_expired_files(db: Session):
     now = datetime.now(timezone.utc)
     expired_files = db.query(File).filter(File.expires_at <= now).all()
 
@@ -105,12 +117,3 @@ def run_cleanup():
 scheduler = BackgroundScheduler()
 scheduler.add_job(run_cleanup, "interval", hours=1)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    scheduler.start()
-    try:
-        yield
-    finally:
-        scheduler.shutdown()
-
-app = FastAPI(title="FileAway API", lifespan=lifespan)

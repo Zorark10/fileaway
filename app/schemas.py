@@ -15,6 +15,8 @@ class FileResponse(BaseModel):
     share_token: str
     uploaded_at: datetime
     expires_at: datetime
+    content_type: str
+    file_size: int
 
     @field_serializer("uploaded_at", "expires_at")
     def format_uploaded_at(self, value: datetime) -> str:
