@@ -88,9 +88,16 @@ async def upload_file(uploaded_file: UploadFile = FastAPIFile(...),
         file_size=file_size,
         expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
     )
-    db.add(new_file)
-    db.commit()
-    db.refresh(new_file)
+
+    try:
+        db.add(new_file)
+        db.commit()
+        db.refresh(new_file)
+    except Exception:
+        db.rollback()
+        file_path.unlink(missing_ok=True)
+        raise
+
     return FileUploadResponse(
         id=new_file.id,
         original_name=new_file.original_name,
@@ -124,11 +131,16 @@ def cleanup_expired_files(db: Session):
 
     for file in expired_files:
         file_path = UPLOAD_DIR / file.stored_name
-        if file_path.is_file():
-            file_path.unlink()
-        db.delete(file)
+        try:
+            if file_path.is_file():
+                file_path.unlink()
 
-    db.commit()
+            db.delete(file)
+            db.commit()
+
+        except Exception as error:
+            db.rollback()
+            print(f"Failed to clean up file {file.id}: {error}")
 
 def run_cleanup():
     # print("Cleanup job is running")
