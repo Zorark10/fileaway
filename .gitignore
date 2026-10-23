@@ -1,8 +1,25 @@
+# Python
 .venv/
+venv/
 __pycache__/
 *.py[cod]
-.env
 .pytest_cache/
-.idea/
-*.iml
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Local database and uploaded files
+*.db
+*.sqlite3
 uploads/
+
+# IDE settings
+.idea/
+
+# Local AI/design tooling
+.impeccable-source/
+.agent/
+.agents/
+skills-lock.json

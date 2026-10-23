@@ -1,18 +1,15 @@
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone ,timedelta
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from fastapi import UploadFile, File as FastAPIFile
-from fastapi import FastAPI, Depends, UploadFile
-from fastapi import HTTPException
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File as FastAPIFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse as FastAPIFileResponse
 from sqlalchemy.orm import Session
-from app.database import get_db, SessionLocal
+from app.database import get_db, SessionLocal, Base, engine
 from app.models import File
-from app.schemas import FileCreate, FileResponse
-from apscheduler.schedulers.background import BackgroundScheduler
 from app.schemas import FileCreate, FileResponse, FileUploadResponse
+from apscheduler.schedulers.background import BackgroundScheduler
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -21,6 +18,7 @@ MAX_FILE_SIZE = 100 * 1024 * 1024
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    Base.metadata.create_all(bind=engine)
     scheduler.start()
     try:
         yield
@@ -28,6 +26,14 @@ async def lifespan(app: FastAPI):
         scheduler.shutdown()
 
 app = FastAPI(title="FileAway API", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/")
 def home():
@@ -116,7 +122,11 @@ def download_file(share_token: str, db: Session = Depends(get_db)):
     if file is None:
         raise HTTPException(status_code=404, detail="File not found")
 
-    if file.expires_at <= datetime.now(timezone.utc):
+    expires_at = file.expires_at
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    if expires_at is not None and expires_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=410, detail="Share link has expired")
 
     file_path = UPLOAD_DIR / file.stored_name
@@ -127,20 +137,21 @@ def download_file(share_token: str, db: Session = Depends(get_db)):
 
 def cleanup_expired_files(db: Session):
     now = datetime.now(timezone.utc)
-    expired_files = db.query(File).filter(File.expires_at <= now).all()
-
-    for file in expired_files:
-        file_path = UPLOAD_DIR / file.stored_name
-        try:
-            if file_path.is_file():
-                file_path.unlink()
-
-            db.delete(file)
-            db.commit()
-
-        except Exception as error:
-            db.rollback()
-            print(f"Failed to clean up file {file.id}: {error}")
+    all_files = db.query(File).all()
+    for file in all_files:
+        exp = file.expires_at
+        if exp is not None and exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp is not None and exp <= now:
+            file_path = UPLOAD_DIR / file.stored_name
+            try:
+                if file_path.is_file():
+                    file_path.unlink()
+                db.delete(file)
+                db.commit()
+            except Exception as error:
+                db.rollback()
+                print(f"Failed to clean up file {file.id}: {error}")
 
 def run_cleanup():
     # print("Cleanup job is running")
