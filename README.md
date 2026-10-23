@@ -190,15 +190,3 @@ The project is being prepared for deployment with a hosted frontend and a persis
 
 Deployment instructions will be added once the production configuration has been tested.
 
-## Future Improvements
-
-- Optional password-protected sharing
-- Configurable expiration periods
-- File-size and storage usage indicators
-- Improved upload progress and error handling
-- Rate limiting and additional abuse prevention
-- Automated deployment and monitoring
-
-## License
-
-No license has been specified yet. Add a `LICENSE` file if you intend to distribute the project under an open-source license.
