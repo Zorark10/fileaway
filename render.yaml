@@ -3,7 +3,7 @@ services:
     name: fileaway-api
     runtime: python
     plan: free
-    region: oregon
+    region: singapore
     branch: main
     autoDeploy: true
     healthCheckPath: /health
