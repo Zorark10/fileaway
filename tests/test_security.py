@@ -123,9 +123,10 @@ def test_cleanup_removes_expired_row_and_file(
         )
         db.commit()
 
-        removed = cleanup_expired_files(db)
+        result = cleanup_expired_files(db)
 
-        assert removed == 1
+        assert result.removed == 1
+        assert result.failed == 0
         assert db.query(File).filter(File.share_token == "cleanup-token").count() == 0
         assert db.query(File).filter(File.share_token == "keep-token").count() == 1
     finally:
@@ -164,9 +165,10 @@ def test_cleanup_retries_when_file_delete_fails(
             return original_unlink(self, missing_ok=missing_ok)
 
         monkeypatch.setattr(Path, "unlink", failing_unlink)
-        removed = cleanup_expired_files(db)
+        result = cleanup_expired_files(db)
 
-        assert removed == 0
+        assert result.removed == 0
+        assert result.failed == 1
         assert db.query(File).filter(File.share_token == "stuck-token").count() == 1
     finally:
         db.close()

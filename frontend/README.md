@@ -34,9 +34,9 @@ npm run build
 Add this environment variable for Production, then redeploy:
 
 ```text
-VITE_API_BASE_URL=https://<name>.duckdns.org
+VITE_API_BASE_URL=https://<service-name>.onrender.com
 ```
 
-Vite embeds variables at build time. The backend must allow the exact Vercel
-origin in `CORS_ORIGINS`. See `../deployment/README.md` for the full deployment
-guide.
+Vite embeds variables at build time. Render must allow the exact Vercel origin in
+`CORS_ORIGINS`, and the B2 bucket must allow the same origin for direct `PUT`
+uploads. See `../deployment/README.md` for the full deployment guide.

@@ -15,11 +15,79 @@ const API_BASE = (
 const MAX_FILE_SIZE = 100 * 1024 * 1024 // 100 MB
 
 // ── Helpers ────────────────────────────────────────────────
+class UploadError extends Error {
+  constructor(message, status = 0) {
+    super(message)
+    this.name = 'UploadError'
+    this.status = status
+  }
+}
+
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
   const i = Math.floor(Math.log(bytes) / Math.log(1024))
   return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`
+}
+
+async function readResponseError(response) {
+  let detail = ''
+  try {
+    const data = await response.json()
+    if (typeof data?.detail === 'string') detail = data.detail
+  } catch {}
+  return new UploadError(detail || `Request failed (${response.status}).`, response.status)
+}
+
+function xhrUpload({ method, url, body, headers = {}, onProgress, onXhr }) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    onXhr(xhr)
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(event.loaded, event.total)
+    }
+
+    xhr.onload = () => {
+      let data = null
+      try {
+        data = JSON.parse(xhr.responseText)
+      } catch {}
+
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data)
+        return
+      }
+
+      reject(new UploadError(
+        data?.detail || `Upload failed (${xhr.status}).`,
+        xhr.status,
+      ))
+    }
+
+    xhr.onerror = () => {
+      reject(new UploadError('Cannot reach the upload service.', 0))
+    }
+
+    xhr.onabort = () => {
+      reject(new DOMException('Upload cancelled', 'AbortError'))
+    }
+
+    xhr.open(method, url)
+    Object.entries(headers).forEach(([name, value]) => {
+      xhr.setRequestHeader(name, value)
+    })
+    xhr.send(body)
+  })
+}
+
+function errorMessage(error) {
+  if (error?.status === 413) return 'File is too large (maximum 100 MB).'
+  if (error?.status === 429) return 'Too many uploads. Please wait a moment and try again.'
+  if (error?.status === 503) return 'The upload service is temporarily unavailable. Please try again.'
+  if (error instanceof TypeError) return 'Cannot reach the upload service. Please try again.'
+  if (error?.message) return error.message
+  return 'Upload failed. Please try again.'
 }
 
 function formatExpiry(expiresAt) {
@@ -232,9 +300,11 @@ export default function App() {
   const [copied, setCopied]               = useState(false)
   const [dragging, setDragging]           = useState(false)
 
-  const inputRef  = useRef(null)
-  const xhrRef    = useRef(null)
-  const copyTimer = useRef(null)
+  const inputRef   = useRef(null)
+  const xhrRef     = useRef(null)
+  const abortRef   = useRef(null)
+  const cancelledRef = useRef(false)
+  const copyTimer  = useRef(null)
 
   // ── File Selection ───────────────────────────────────────
   const selectFile = useCallback((f) => {
@@ -273,61 +343,103 @@ export default function App() {
     if (dropped) selectFile(dropped)
   }
 
-  // ── Upload via XMLHttpRequest (Real Progress) ─────────────
-  const upload = useCallback(() => {
+  // ── Upload: direct-to-B2 when enabled, proxy fallback otherwise ──
+  const upload = useCallback(async () => {
     if (!file) return
+
+    cancelledRef.current = false
     setState(STATES.UPLOADING)
     setProgress(0)
     setUploadedBytes(0)
     setError('')
 
-    const xhr = new XMLHttpRequest()
-    xhrRef.current = xhr
-    const form = new FormData()
-    form.append('uploaded_file', file)
+    const controller = new AbortController()
+    abortRef.current = controller
 
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const pct = Math.round((e.loaded / e.total) * 100)
-        setProgress(pct)
-        setUploadedBytes(e.loaded)
-      }
+    const onProgress = (loaded, total) => {
+      setUploadedBytes(loaded)
+      if (total > 0) setProgress(Math.min(100, Math.round((loaded / total) * 100)))
     }
 
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const data = JSON.parse(xhr.responseText)
-          setResult(data)
-          setState(STATES.SUCCESS)
-        } catch {
-          setError('Failed to parse response from server.')
-          setState(STATES.ERROR)
+    try {
+      const authorization = await fetch(`${API_BASE}/uploads/authorize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          original_name: file.name,
+          content_type: file.type || 'application/octet-stream',
+          file_size: file.size,
+        }),
+        signal: controller.signal,
+      })
+
+      if (!authorization.ok) throw await readResponseError(authorization)
+
+      const authorizationData = await authorization.json()
+      let data
+
+      if (authorizationData.mode === 'direct') {
+        if (!authorizationData.upload_url || !authorizationData.upload_token) {
+          throw new UploadError('The upload service returned an invalid authorization.')
         }
+
+        await xhrUpload({
+          method: authorizationData.method || 'PUT',
+          url: authorizationData.upload_url,
+          body: file,
+          headers: authorizationData.headers || {},
+          onProgress,
+          onXhr: (xhr) => { xhrRef.current = xhr },
+        })
+
+        if (cancelledRef.current) return
+        setProgress(100)
+        setUploadedBytes(file.size)
+
+        const completed = await fetch(`${API_BASE}/uploads/complete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            upload_token: authorizationData.upload_token,
+          }),
+          signal: controller.signal,
+        })
+
+        if (!completed.ok) throw await readResponseError(completed)
+        data = await completed.json()
       } else {
-        let msg = 'Upload failed. Please check server logs.'
-        try {
-          const data = JSON.parse(xhr.responseText)
-          msg = data.detail || msg
-        } catch {}
-        if (xhr.status === 413) msg = 'File is too large (maximum 100 MB).'
-        if (xhr.status === 429) msg = 'Too many uploads. Please wait a moment and try again.'
-        setError(msg)
-        setState(STATES.ERROR)
+        const form = new FormData()
+        form.append('uploaded_file', file)
+
+        data = await xhrUpload({
+          method: 'POST',
+          url: `${API_BASE}/upload`,
+          body: form,
+          onProgress,
+          onXhr: (xhr) => { xhrRef.current = xhr },
+        })
       }
-    }
 
-    xhr.onerror = () => {
-      setError('Cannot reach the upload server. Please try again.')
+      if (cancelledRef.current) return
+
+      setProgress(100)
+      setUploadedBytes(file.size)
+      setResult(data)
+      setState(STATES.SUCCESS)
+    } catch (uploadError) {
+      if (cancelledRef.current || uploadError?.name === 'AbortError') return
+      setError(errorMessage(uploadError))
       setState(STATES.ERROR)
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null
+      xhrRef.current = null
     }
-
-    xhr.open('POST', `${API_BASE}/upload`)
-    xhr.send(form)
   }, [file])
 
   // ── Cancel ongoing upload ────────────────────────────────
   const cancelUpload = useCallback(() => {
+    cancelledRef.current = true
+    abortRef.current?.abort()
     if (xhrRef.current) {
       xhrRef.current.abort()
       xhrRef.current = null
@@ -373,8 +485,11 @@ export default function App() {
 
   // ── Reset to initial state ───────────────────────────────
   const reset = useCallback(() => {
-    if (xhrRef.current && state === STATES.UPLOADING) {
+    cancelledRef.current = true
+    abortRef.current?.abort()
+    if (xhrRef.current) {
       xhrRef.current.abort()
+      xhrRef.current = null
     }
     setState(STATES.IDLE)
     setFile(null)
@@ -384,7 +499,7 @@ export default function App() {
     setError('')
     setCopied(false)
     if (inputRef.current) inputRef.current.value = ''
-  }, [state])
+  }, [])
 
   const isUploading = state === STATES.UPLOADING
   const isSuccess   = state === STATES.SUCCESS

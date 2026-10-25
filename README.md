@@ -2,191 +2,222 @@
 
 **Temporary file sharing, without the clutter.**
 
-FileAway is a lightweight web application for sharing files through temporary download links. Upload a file, generate a shareable URL, and let the recipient download it without needing an account. Files are designed to expire automatically after 24 hours.
+FileAway lets someone upload a file, get a random share link, and send it to a
+recipient without an account. Links expire after 24 hours. Production runs on a
+$0 stack: Vercel Hobby for the frontend, Render Free for the API, Supabase Free
+PostgreSQL for metadata, and Backblaze B2 for files.
 
 ## Features
 
-- **Simple file uploads** — Upload files through a clean, responsive web interface.
-- **Shareable download links** — Generate a unique URL for each uploaded file.
-- **24-hour link expiry** — Links expire automatically after their validity period.
-- **Automatic cleanup** — A scheduled background task removes expired files and their associated database records.
-- **100 MB upload limit** — Supports file uploads up to 100 MB.
-- **Direct downloads** — Recipients can download files directly through their share links.
-- **Responsive interface** — Built with React and Tailwind CSS for a clean user experience.
+- Upload files up to 100 MB through a responsive React interface.
+- Direct browser-to-B2 uploads with progress, so file bodies do not pass through
+  the free Render instance.
+- Random share tokens and no public file listing.
+- Immediate `410` rejection for expired links.
+- Automatic cleanup of expired metadata and every version of their B2 objects.
+- Local development with SQLite and local disk.
+- Mixed storage: old local rows and new B2 rows can coexist.
 
-## Tech Stack
+## Tech stack
 
-| Layer | Technologies |
+| Layer | Technology |
 |---|---|
-| Frontend | React, JavaScript, Vite |
-| Styling | Tailwind CSS |
-| Backend | Python, FastAPI |
-| ORM | SQLAlchemy |
-| Database | SQLite |
-| Database migrations | Alembic |
-| Background tasks | APScheduler |
+| Frontend | React, Vite, Tailwind CSS |
+| API | Python, FastAPI |
+| ORM and migrations | SQLAlchemy, Alembic |
+| Local database | SQLite |
+| Production database | Supabase Free PostgreSQL |
+| Production storage | Backblaze B2 (S3-compatible) |
+| Scheduled work | APScheduler plus GitHub Actions |
 
-## How It Works
+## How uploads work
 
-1. **Upload:** The sender selects a file and uploads it to the application.
-2. **Generate:** The backend stores the file and generates a unique share token.
-3. **Share:** The application returns a URL that can be shared with the recipient.
-4. **Download:** The recipient opens the link to download the file.
-5. **Expire:** After 24 hours, the link expires and the scheduled cleanup process removes the file and its database record.
+1. The browser asks `POST /uploads/authorize` for permission to upload.
+2. With B2 enabled, the API returns a 30-minute presigned PUT URL, an upload
+   token, and the authorized content type. The URL signs the exact
+   `Content-Length`, so B2 rejects a body of any other size with `403`.
+3. The browser uploads the file directly to B2.
+4. The browser calls `POST /uploads/complete`. The API verifies the token, HEADs
+   the object, checks that its actual size matches the declared size, and stores
+   metadata in PostgreSQL. A mismatched or oversized object is permanently
+   deleted, including all B2 versions and delete markers.
+5. A share URL is returned.
 
-## Project Structure
+In local mode, `POST /uploads/authorize` returns `{"mode":"proxy"}` and the
+frontend falls back to the multipart `POST /upload` endpoint, keeping files in
+`uploads/`.
+
+Downloads call `GET /files/share/{share_token}`. The API checks expiry and, for
+B2 files, redirects to a 5-minute presigned download URL. The link itself is
+rejected immediately at 24 hours, but an already-issued signed URL can remain
+valid for up to 5 minutes after expiry.
+
+## Project structure
 
 ```text
 fileaway/
 ├── app/
-│   ├── main.py
-│   ├── models.py
-│   ├── schemas.py
-│   ├── database.py
-│   └── create_tables.py
+│   ├── main.py             # API, uploads, downloads, cleanup
+│   ├── config.py           # Environment-based settings
+│   ├── database.py         # SQLite/PostgreSQL engine and sessions
+│   ├── models.py           # File metadata model
+│   ├── schemas.py          # Request and response models
+│   ├── storage.py          # B2 presigning, HEAD, delete, listing
+│   └── upload_tokens.py    # HMAC upload authorization tokens
 ├── frontend/
-│   ├── src/
-│   ├── public/
-│   └── package.json
+│   └── src/App.jsx
 ├── migrations/
 ├── tests/
-├── uploads/
-├── alembic.ini
-├── .env
-├── .gitignore
-└── README.md
+├── deployment/
+│   ├── README.md           # $0 deployment guide
+│   ├── configure_b2_cors.py
+│   └── legacy-oracle/      # Archived Oracle Cloud setup
+├── render.yaml
+├── requirements.txt
+└── .env.example
 ```
 
-*The `uploads/` directory and local database are runtime data, not source files. The `.env` file contains local configuration and should not be committed.*
+`uploads/` and `fileaway.db` are local runtime data and are not committed.
 
-## Getting Started
+## Local development
 
 ### Prerequisites
 
 - Python 3.10 or newer
 - Node.js and npm
-- Git
 
-### 1. Clone the repository
-
-```bash
-git clone <your-repository-url>
-cd fileaway
-```
-
-Replace `<your-repository-url>` with the URL of this GitHub repository.
-
-### 2. Set up the backend
-
-Create and activate a virtual environment from the project root.
-
-**Windows PowerShell**
+### Backend
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-```
-
-Install the backend dependencies:
-
-```bash
-python -m pip install fastapi "uvicorn[standard]" sqlalchemy alembic python-dotenv python-multipart apscheduler
-```
-
-Create a `.env` file in the project root with your local database configuration:
-
-```dotenv
-DATABASE_URL=sqlite:///./fileaway.db
-```
-
-Initialize the database tables using the project's table creation script:
-
-```bash
-python -m app.create_tables
-```
-
-Start the FastAPI development server:
-
-```bash
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
+python -m alembic upgrade head
 python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-The backend should now be available at:
+The API is at `http://127.0.0.1:8000` and interactive docs are at
+`http://127.0.0.1:8000/docs`.
 
-- API: http://127.0.0.1:8000
-- Interactive API documentation: http://127.0.0.1:8000/docs
+The default `.env.example` uses:
 
-### 3. Set up the frontend
+```dotenv
+DATABASE_URL=sqlite:///./fileaway.db
+UPLOAD_DIR=./uploads
+PUBLIC_BASE_URL=http://127.0.0.1:8000
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+STORAGE_BACKEND=local
+```
 
-Open a second terminal and navigate to the frontend directory:
+### Frontend
 
-```bash
+```powershell
 cd frontend
 npm install
 npm run dev
 ```
 
-Vite will display the local frontend URL, typically:
+Vite serves the app at `http://localhost:5173`. For local development the
+frontend defaults to `http://127.0.0.1:8000` when no API URL is configured.
 
-http://localhost:5173
+To point at another API:
 
-Keep the backend running while using the frontend. The frontend's API configuration must point to the local FastAPI server for local development.
+```powershell
+$env:VITE_API_BASE_URL = "https://your-api.example"
+npm run dev
+```
 
-## API Overview
+## API overview
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/` | Backend health check |
-| `POST` | `/upload` | Upload a file and generate a share link |
-| `GET` | `/files/share/{share_token}` | Download a file using its share token |
+| `GET` | `/` | Basic API status |
+| `GET` | `/health` | Health check with a database query |
+| `POST` | `/uploads/authorize` | Get direct-upload permission or proxy mode |
+| `POST` | `/uploads/complete` | Verify a direct upload and save metadata |
+| `POST` | `/upload` | Multipart upload (local mode or proxy fallback) |
+| `GET` | `/files/share/{share_token}` | Download a file or redirect to B2 |
+| `POST` | `/internal/cleanup` | Protected cleanup trigger (hidden from OpenAPI) |
 
-The upload endpoint expects a multipart form field named `uploaded_file`.
+The cleanup endpoint returns `503` when `CLEANUP_SECRET` is unset, `401` for a
+wrong secret, `409` while another cleanup is running, and `500` when any file
+could not be removed. Failed rows remain in the database and are retried.
 
-### Example Upload Request
+The multipart form field is named `uploaded_file`.
+
+Example:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/upload \
   -F "uploaded_file=@example.pdf"
 ```
 
-The backend returns a response containing the uploaded file's metadata and share URL.
-
 ## Configuration
 
-The backend uses environment-based configuration for its database connection.
+Copy `.env.example` to `.env` for local work. Never commit `.env`.
 
 | Variable | Purpose |
 |---|---|
-| `DATABASE_URL` | Database connection string |
+| `DATABASE_URL` | SQLite or PostgreSQL connection string |
+| `UPLOAD_DIR` | Local upload directory for local mode |
+| `PUBLIC_BASE_URL` | Public API URL used to build share links |
+| `CORS_ORIGINS` | Comma-separated allowed browser origins |
+| `STORAGE_BACKEND` | `local` or `b2` |
+| `B2_ENDPOINT_URL` | B2 S3 endpoint |
+| `B2_REGION` | B2 bucket region |
+| `B2_BUCKET` | Private bucket name |
+| `B2_KEY_ID` | B2 application key ID |
+| `B2_APP_KEY` | B2 application key |
+| `B2_UPLOAD_PREFIX` | Object key prefix, default `uploads/` |
+| `UPLOAD_SIGNING_SECRET` | HMAC secret for direct-upload tokens |
+| `CLEANUP_SECRET` | Shared secret for the cleanup endpoint |
+| `SHARE_EXPIRY_HOURS` | Link lifetime, default `24` |
+| `CLEANUP_INTERVAL_HOURS` | In-process cleanup interval, default `1` |
+| `B2_PRESIGN_UPLOAD_SECONDS` | Direct upload URL lifetime, default `1800` |
+| `B2_PRESIGN_DOWNLOAD_SECONDS` | Download URL lifetime, default `300` |
+| `UPLOAD_TOKEN_TTL_SECONDS` | Upload token lifetime, default `1800` |
+| `ORPHAN_GRACE_SECONDS` | Orphan object age before deletion, default `3600` |
+| `CLEANUP_BATCH_SIZE` | Rows inspected per cleanup batch, default `200` |
 
-The upload directory and public share URL should be configured appropriately for the deployment environment. Never commit credentials, secrets, or private environment files to version control.
+Secrets belong on the backend only. The frontend needs only
+`VITE_API_BASE_URL`.
 
 ## Testing
 
-Run the backend tests from the project root:
-
-```bash
-python -m pytest
-```
-
-Ensure the required testing dependencies are installed before running the test suite. The frontend can be checked with:
-
-```bash
+```powershell
+.\.venv\Scripts\python.exe -m pytest
 cd frontend
+npm run lint
 npm run build
 ```
 
-## Security and Limitations
-
-- Anyone who possesses a valid share link can access the corresponding file until the link expires.
-- Uploaded files consume server storage and network bandwidth.
-- The 100 MB limit applies to the application's upload logic; the hosting infrastructure must support the same limit.
-- Public deployment requires appropriate CORS configuration, persistent storage, secure environment variables, and protection against unauthorized file enumeration.
-- A production deployment must use a publicly accessible API URL rather than a local development address.
+The B2 tests use an in-memory fake, so they do not need cloud credentials.
 
 ## Deployment
 
-The project is being prepared for deployment with a hosted frontend and a persistent backend environment. Production deployment requires additional configuration for public share URLs, HTTPS, persistent storage, database initialization, and background cleanup.
+See [deployment/README.md](deployment/README.md) for the full Vercel + Render +
+Supabase + Backblaze B2 setup, CORS configuration, GitHub cleanup workflow, and
+free-tier limitations.
 
-Deployment instructions will be added once the production configuration has been tested.
+The short version:
 
+1. Create a Supabase project and use its session pooler URL.
+2. Create a private B2 bucket and configure CORS for the Vercel origin.
+3. Deploy the API on Render with `render.yaml` and the B2/Supabase secrets.
+4. Deploy `frontend/` on Vercel with `VITE_API_BASE_URL`.
+5. Add the `CLEANUP_URL` and `CLEANUP_SECRET` GitHub Actions secrets.
+
+## Security and limitations
+
+- Anyone with a share link can download the file until expiry.
+- There is no authentication, rate limiting, or malware scanning.
+- The public authorize endpoint can be abused to request signed upload URLs.
+  Add rate limiting or a CAPTCHA before promoting a public instance widely.
+- Expired links are rejected immediately, but physical B2 deletion depends on
+  the cleanup job.
+- Free services can sleep, pause, change their allowances, or lose data. There
+  are no backups on the free Supabase plan; export metadata separately if it
+  matters.
+- Existing local uploads are not migrated to B2 automatically.
+- Run a production deployment with HTTPS and exact CORS origins.

@@ -10,8 +10,9 @@ export default defineConfig({
     // The frontend App.jsx uses the full API_BASE URL directly,
     // so this proxy is a convenience for development only.
     proxy: {
-      '/upload': { target: 'http://127.0.0.1:8000', changeOrigin: true },
-      '/files':  { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      '/upload':  { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      '/uploads': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      '/files':   { target: 'http://127.0.0.1:8000', changeOrigin: true },
     },
   },
 })

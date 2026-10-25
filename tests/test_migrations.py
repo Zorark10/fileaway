@@ -49,13 +49,14 @@ def test_migrations_create_fresh_schema(tmp_path, monkeypatch):
             "expires_at",
             "content_type",
             "file_size",
+            "storage_backend",
         }
 
         with engine.connect() as connection:
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "e50500e24234"
+            assert version == "7b1c9d4e2f10"
     finally:
         engine.dispose()
 
@@ -102,7 +103,7 @@ def test_migrations_preserve_legacy_rows(tmp_path, monkeypatch):
                 text(
                     """
                     SELECT original_name, share_token, expires_at,
-                           content_type, file_size
+                           content_type, file_size, storage_backend
                     FROM files
                     WHERE id = 1
                     """
@@ -114,6 +115,7 @@ def test_migrations_preserve_legacy_rows(tmp_path, monkeypatch):
         assert row["expires_at"] is not None
         assert row["content_type"] == "application/octet-stream"
         assert row["file_size"] == 0
+        assert row["storage_backend"] == "local"
 
         columns = {
             column["name"]: column
@@ -238,6 +240,7 @@ def test_migrations_accept_existing_current_schema(tmp_path, monkeypatch):
             "expires_at",
             "content_type",
             "file_size",
+            "storage_backend",
         }
     finally:
         engine.dispose()

@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: fileaway-api
+    runtime: python
+    plan: free
+    region: oregon
+    branch: main
+    autoDeploy: true
+    healthCheckPath: /health
+    buildCommand: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+    startCommand: python -m alembic upgrade head && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --no-access-log --proxy-headers --forwarded-allow-ips='*'
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.9"
+      - key: STORAGE_BACKEND
+        value: b2
+      - key: B2_UPLOAD_PREFIX
+        value: uploads/
+      - key: SHARE_EXPIRY_HOURS
+        value: "24"
+      - key: CLEANUP_INTERVAL_HOURS
+        value: "1"
+      - key: ORPHAN_GRACE_SECONDS
+        value: "3600"
+      - key: DATABASE_URL
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: B2_ENDPOINT_URL
+        sync: false
+      - key: B2_REGION
+        sync: false
+      - key: B2_BUCKET
+        sync: false
+      - key: B2_KEY_ID
+        sync: false
+      - key: B2_APP_KEY
+        sync: false
+      - key: UPLOAD_SIGNING_SECRET
+        generateValue: true
+      - key: CLEANUP_SECRET
+        generateValue: true

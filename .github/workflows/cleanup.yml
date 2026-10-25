@@ -1,0 +1,90 @@
+name: Cleanup expired files
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: fileaway-cleanup
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Trigger cleanup endpoint
+        env:
+          CLEANUP_URL: ${{ secrets.CLEANUP_URL }}
+          CLEANUP_SECRET: ${{ secrets.CLEANUP_SECRET }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$CLEANUP_URL" ] || [ -z "$CLEANUP_SECRET" ]; then
+            echo "::error::CLEANUP_URL and CLEANUP_SECRET repository secrets are required."
+            exit 1
+          fi
+
+          for attempt in 1 2 3; do
+            body_file="$(mktemp)"
+            status="$(
+              curl --silent --show-error \
+                --max-time 180 \
+                --output "$body_file" \
+                --write-out "%{http_code}" \
+                -X POST \
+                -H "X-Cleanup-Secret: ${CLEANUP_SECRET}" \
+                "${CLEANUP_URL}"
+            )" || status="000"
+
+            response="$(head -c 2000 "$body_file")"
+            rm -f "$body_file"
+
+            echo "Attempt ${attempt}: HTTP ${status}"
+            if [ -n "$response" ]; then
+              echo "$response"
+            fi
+
+            case "$status" in
+              200|201)
+                exit 0
+                ;;
+              409)
+                echo "::notice::Cleanup is already running; treating this run as successful."
+                exit 0
+                ;;
+              401)
+                echo "::error::Cleanup secret was rejected. Update the CLEANUP_SECRET repository secret."
+                exit 1
+                ;;
+              404)
+                echo "::error::Cleanup endpoint was not found. Check CLEANUP_URL includes /internal/cleanup."
+                exit 1
+                ;;
+              500)
+                echo "::warning::Cleanup completed with failures; retrying in case B2 or the database was transiently unavailable."
+                ;;
+              502|503|504)
+                echo "::warning::Cleanup service is unavailable or waking up; retrying."
+                ;;
+              000)
+                echo "::warning::Could not reach the cleanup service; retrying."
+                ;;
+              *)
+                echo "::error::Unexpected cleanup response (HTTP ${status}). Check CLEANUP_URL, the secret, and Render logs."
+                exit 1
+                ;;
+            esac
+
+            if [ "$attempt" -lt 3 ]; then
+              delay=$((attempt * 20))
+              echo "Retrying in ${delay}s..."
+              sleep "$delay"
+            fi
+          done
+
+          echo "::error::Cleanup failed after 3 attempts. Check the Render logs and the response above."
+          exit 1
