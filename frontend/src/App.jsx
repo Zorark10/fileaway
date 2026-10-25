@@ -2,11 +2,15 @@ import { useState, useRef, useCallback } from 'react'
 import './index.css'
 
 // ── API config ─────────────────────────────────────────────
-const API_BASE = import.meta.env.VITE_API_BASE ?? (
-  typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-    ? 'http://127.0.0.1:8000'
-    : ''
-)
+const API_BASE = (
+  import.meta.env.VITE_API_BASE_URL
+  || import.meta.env.VITE_API_BASE
+  || (
+    typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+      ? 'http://127.0.0.1:8000'
+      : ''
+  )
+).replace(/\/+$/, '')
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024 // 100 MB
 
@@ -307,13 +311,14 @@ export default function App() {
           msg = data.detail || msg
         } catch {}
         if (xhr.status === 413) msg = 'File is too large (maximum 100 MB).'
+        if (xhr.status === 429) msg = 'Too many uploads. Please wait a moment and try again.'
         setError(msg)
         setState(STATES.ERROR)
       }
     }
 
     xhr.onerror = () => {
-      setError('Cannot reach server. Ensure the FileAway backend is running on port 8000.')
+      setError('Cannot reach the upload server. Please try again.')
       setState(STATES.ERROR)
     }
 

@@ -9,6 +9,8 @@ __pycache__/
 .env
 .env.*
 !.env.example
+deployment/**/*.env
+!deployment/**/*.env.example
 
 # Local database and uploaded files
 *.db

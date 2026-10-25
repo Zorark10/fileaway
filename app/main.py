@@ -1,65 +1,127 @@
+import logging
+import secrets
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File as FastAPIFile
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from fastapi import Depends, FastAPI, File as FastAPIFile, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse as FastAPIFileResponse
+from sqlalchemy import text
 from sqlalchemy.orm import Session
-from app.database import get_db, SessionLocal, Base, engine
+
+from app.config import settings
+from app.database import SessionLocal, get_db
 from app.models import File
-from app.schemas import FileCreate, FileResponse, FileUploadResponse
-from apscheduler.schedulers.background import BackgroundScheduler
+from app.schemas import FileUploadResponse
 
-UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
+logger = logging.getLogger("fileaway")
 
-MAX_FILE_SIZE = 100 * 1024 * 1024
+UPLOAD_DIR = settings.upload_dir
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+MAX_FILE_SIZE = settings.max_file_size
+CHUNK_SIZE = 1024 * 1024
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _sanitize_original_name(filename: str | None) -> str:
+    normalized = (filename or "unnamed").replace("\\", "/")
+    name = Path(normalized).name
+    name = "".join(char for char in name if char >= " " and char != "\x7f")
+    name = name.strip()
+
+    if not name or name in {".", ".."}:
+        return "unnamed"
+
+    return name[:255]
+
+
+def _safe_stored_path(stored_name: str | None) -> Path | None:
+    if not stored_name or "/" in stored_name or "\\" in stored_name:
+        return None
+
+    base_dir = UPLOAD_DIR.resolve()
+    candidate = (base_dir / stored_name).resolve()
+
+    if candidate.parent != base_dir:
+        return None
+
+    return candidate
+
+
+def _share_url(share_token: str) -> str:
+    base_url = settings.public_base_url.rstrip("/")
+    return f"{base_url}/files/share/{share_token}"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
+    if (
+        "127.0.0.1" in settings.public_base_url
+        or "localhost" in settings.public_base_url
+    ):
+        logger.warning(
+            "PUBLIC_BASE_URL is local; generated share links will not be "
+            "reachable from the internet"
+        )
+
+    run_cleanup()
     scheduler.start()
+    logger.info(
+        "FileAway started; uploads=%s cleanup_interval_hours=%s",
+        UPLOAD_DIR,
+        settings.cleanup_interval_hours,
+    )
+
     try:
         yield
     finally:
-        scheduler.shutdown()
+        scheduler.shutdown(wait=False)
+
 
 app = FastAPI(title="FileAway API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=list(settings.cors_origins),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+    max_age=600,
 )
+
 
 @app.get("/")
 def home():
     return {"message": "FileAway API is running"}
 
-@app.get("/files", response_model=list[FileResponse])
-def get_files(db: Session = Depends(get_db)):
-    files = db.query(File).all()
-    return files
 
-@app.post("/files")
-def create_file(file: FileCreate, db: Session = Depends(get_db)):
-    new_file = File(
-        original_name=file.original_name,
-        stored_name=file.stored_name,
-        share_token = str(uuid.uuid4()),
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
-    )
-    db.add(new_file)
-    db.commit()
-    db.refresh(new_file)
-    return new_file
+@app.get("/health")
+def health(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1 FROM files LIMIT 1"))
+    except Exception:
+        logger.exception("Health check database query failed")
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    return {"status": "ok"}
+
 
 @app.post("/upload", response_model=FileUploadResponse)
-async def upload_file(uploaded_file: UploadFile = FastAPIFile(...),
-                      db: Session = Depends(get_db)):
+async def upload_file(
+    uploaded_file: UploadFile = FastAPIFile(...),
+    db: Session = Depends(get_db),
+):
     stored_name = str(uuid.uuid4())
     file_path = UPLOAD_DIR / stored_name
     file_size = 0
@@ -67,7 +129,7 @@ async def upload_file(uploaded_file: UploadFile = FastAPIFile(...),
     try:
         with file_path.open("wb") as destination:
             while True:
-                chunk = await uploaded_file.read(1024 * 1024)
+                chunk = await uploaded_file.read(CHUNK_SIZE)
 
                 if not chunk:
                     break
@@ -81,18 +143,22 @@ async def upload_file(uploaded_file: UploadFile = FastAPIFile(...),
                     )
 
                 destination.write(chunk)
-
     except Exception:
         file_path.unlink(missing_ok=True)
         raise
 
     new_file = File(
-        original_name = Path(uploaded_file.filename or "unnamed").name,
-        stored_name = stored_name,
-        share_token = str(uuid.uuid4()),
-        content_type=uploaded_file.content_type or "application/octet-stream",
+        original_name=_sanitize_original_name(uploaded_file.filename),
+        stored_name=stored_name,
+        share_token=secrets.token_urlsafe(32),
+        content_type=(
+            uploaded_file.content_type or "application/octet-stream"
+        )[:255],
         file_size=file_size,
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+        expires_at=(
+            datetime.now(timezone.utc)
+            + timedelta(hours=settings.share_expiry_hours)
+        ),
     )
 
     try:
@@ -102,7 +168,14 @@ async def upload_file(uploaded_file: UploadFile = FastAPIFile(...),
     except Exception:
         db.rollback()
         file_path.unlink(missing_ok=True)
+        logger.exception("Failed to persist uploaded file metadata")
         raise
+
+    logger.info(
+        "Stored upload id=%s size=%s bytes",
+        new_file.id,
+        new_file.file_size,
+    )
 
     return FileUploadResponse(
         id=new_file.id,
@@ -113,8 +186,9 @@ async def upload_file(uploaded_file: UploadFile = FastAPIFile(...),
         file_size=new_file.file_size,
         uploaded_at=new_file.uploaded_at,
         expires_at=new_file.expires_at,
-        share_url=f"http://127.0.0.1:8000/files/share/{new_file.share_token}",
+        share_url=_share_url(new_file.share_token),
     )
+
 
 @app.get("/files/share/{share_token}")
 def download_file(share_token: str, db: Session = Depends(get_db)):
@@ -122,45 +196,77 @@ def download_file(share_token: str, db: Session = Depends(get_db)):
     if file is None:
         raise HTTPException(status_code=404, detail="File not found")
 
-    expires_at = file.expires_at
-    if expires_at is not None and expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-
+    expires_at = _as_utc(file.expires_at)
     if expires_at is not None and expires_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=410, detail="Share link has expired")
 
-    file_path = UPLOAD_DIR / file.stored_name
-    if not file_path.is_file():
+    file_path = _safe_stored_path(file.stored_name)
+    if file_path is None or not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
-    return FastAPIFileResponse(path = file_path, filename=file.original_name)
+    return FastAPIFileResponse(
+        path=file_path,
+        filename=file.original_name,
+        media_type=file.content_type or "application/octet-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
-def cleanup_expired_files(db: Session):
+
+def cleanup_expired_files(db: Session) -> int:
     now = datetime.now(timezone.utc)
-    all_files = db.query(File).all()
-    for file in all_files:
-        exp = file.expires_at
-        if exp is not None and exp.tzinfo is None:
-            exp = exp.replace(tzinfo=timezone.utc)
-        if exp is not None and exp <= now:
-            file_path = UPLOAD_DIR / file.stored_name
-            try:
-                if file_path.is_file():
-                    file_path.unlink()
-                db.delete(file)
-                db.commit()
-            except Exception as error:
-                db.rollback()
-                print(f"Failed to clean up file {file.id}: {error}")
+    removed = 0
 
-def run_cleanup():
-    # print("Cleanup job is running")
+    for file in db.query(File).all():
+        expires_at = _as_utc(file.expires_at)
+        if expires_at is None or expires_at > now:
+            continue
+
+        file_path = _safe_stored_path(file.stored_name)
+        if file_path is not None:
+            try:
+                file_path.unlink(missing_ok=True)
+            except OSError:
+                logger.exception(
+                    "Could not delete stored file for id=%s; will retry",
+                    file.id,
+                )
+                continue
+
+        try:
+            db.delete(file)
+            db.commit()
+            removed += 1
+        except Exception:
+            db.rollback()
+            logger.exception("Could not delete expired metadata id=%s", file.id)
+
+    if removed:
+        logger.info("Removed %s expired file(s)", removed)
+
+    return removed
+
+
+def run_cleanup() -> int:
     db = SessionLocal()
     try:
-        cleanup_expired_files(db)
+        return cleanup_expired_files(db)
+    except Exception:
+        logger.exception("Expired-file cleanup job failed")
+        return 0
     finally:
         db.close()
 
-scheduler = BackgroundScheduler()
-scheduler.add_job(run_cleanup, "interval", hours=1)
 
+scheduler = BackgroundScheduler(timezone="UTC")
+scheduler.add_job(
+    run_cleanup,
+    "interval",
+    hours=settings.cleanup_interval_hours,
+    id="cleanup-expired-files",
+    max_instances=1,
+    coalesce=True,
+    misfire_grace_time=300,
+)
