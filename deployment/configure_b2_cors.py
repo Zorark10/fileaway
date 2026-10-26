@@ -4,6 +4,24 @@ import os
 import boto3
 from botocore.config import Config
 
+PRODUCTION_ORIGIN = "https://fileaway-share.vercel.app"
+ALLOWED_METHODS = ("GET", "PUT", "HEAD")
+ALLOWED_HEADERS = ("content-type",)
+
+
+def build_cors_configuration(origins: list[str], max_age: int) -> dict:
+    return {
+        "CORSRules": [
+            {
+                "AllowedOrigins": origins,
+                "AllowedMethods": list(ALLOWED_METHODS),
+                "AllowedHeaders": list(ALLOWED_HEADERS),
+                "ExposeHeaders": ["ETag"],
+                "MaxAgeSeconds": max_age,
+            }
+        ]
+    }
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -13,7 +31,10 @@ def main() -> None:
         "--origin",
         action="append",
         required=True,
-        help="Allowed browser origin, for example https://fileaway.vercel.app",
+        help=(
+            "Allowed browser origin, for example "
+            f"{PRODUCTION_ORIGIN}"
+        ),
     )
     parser.add_argument(
         "--max-age",
@@ -67,17 +88,7 @@ def main() -> None:
 
     client.put_bucket_cors(
         Bucket=bucket,
-        CORSConfiguration={
-            "CORSRules": [
-                {
-                    "AllowedOrigins": origins,
-                    "AllowedMethods": ["GET", "PUT", "HEAD"],
-                    "AllowedHeaders": ["content-type"],
-                    "ExposeHeaders": ["ETag"],
-                    "MaxAgeSeconds": args.max_age,
-                }
-            ]
-        },
+        CORSConfiguration=build_cors_configuration(origins, args.max_age),
     )
 
     print(f"CORS configured for {', '.join(origins)}")

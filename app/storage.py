@@ -122,7 +122,10 @@ class B2Storage:
                     "Bucket": self.bucket,
                     "Key": self.object_key(stored_name),
                     "ContentType": content_type,
-                    "ContentLength": content_length,
+                    # ContentLength is intentionally not signed. Browsers
+                    # cannot set it manually, and B2 rejects a preflight that
+                    # lists a signed header the browser is not allowed to send.
+                    # The actual size is enforced by /uploads/complete.
                 },
                 ExpiresIn=expires_in,
                 HttpMethod="PUT",

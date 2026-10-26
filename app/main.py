@@ -404,7 +404,10 @@ def complete_upload(
         try:
             storage.delete_object(stored_name)
         except StorageError:
-            logger.exception("Could not remove oversized upload")
+            logger.exception(
+                "Could not remove oversized upload; "
+                "orphan cleanup will retry"
+            )
         raise HTTPException(status_code=413, detail="File too large")
 
     if stored_object.size != declared_size:

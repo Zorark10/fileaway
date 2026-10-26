@@ -22,7 +22,7 @@ Browser
   |-- POST /uploads/authorize -----------> Render API
   |<-- presigned B2 PUT + upload token ----|
   |
-  |-- PUT file ---------------------------> Backblaze B2 (exact signed Content-Length, 100 MB max)
+  |-- PUT file ---------------------------> Backblaze B2 (signed Content-Type; size checked after)
   |
   |-- POST /uploads/complete ------------> Render API
   |                                         |-- HEAD object, verify size
@@ -108,13 +108,24 @@ $env:B2_BUCKET = "your-bucket"
 $env:B2_SETUP_KEY_ID = "your-setup-key-id"
 $env:B2_SETUP_APP_KEY = "your-setup-application-key"
 .\.venv\Scripts\python.exe deployment\configure_b2_cors.py `
-  --origin "https://your-project.vercel.app"
+  --origin "https://fileaway-share.vercel.app"
 ```
 
-The rule allows `GET`, `PUT`, and `HEAD`, the `content-type` header, and caches
-the preflight for one hour. Add each Vercel preview or custom origin with another
-`--origin` flag. Origins must be exact; CORS does not support subdomain
+The rule allows `GET`, `PUT`, and `HEAD`, the exact origin
+`https://fileaway-share.vercel.app`, and the `content-type` request header, then
+caches the preflight for one hour. Add each Vercel preview or custom origin with
+another `--origin` flag. Origins must be exact; CORS does not support subdomain
 wildcards. Delete the temporary setup key after configuring CORS.
+
+To verify the rule without changing it, use a key that can read bucket settings:
+
+```powershell
+python -c "import boto3, os; c=boto3.client('s3', endpoint_url=os.environ['B2_ENDPOINT_URL'], region_name=os.environ['B2_REGION'], aws_access_key_id=os.environ['B2_SETUP_KEY_ID'], aws_secret_access_key=os.environ['B2_SETUP_APP_KEY']); print(c.get_bucket_cors(Bucket=os.environ['B2_BUCKET']))"
+```
+
+Confirm the result includes `https://fileaway-share.vercel.app` in
+`AllowedOrigins`, `PUT` in `AllowedMethods`, and `content-type` in
+`AllowedHeaders`.
 
 ## 3. Deploy the API on Render
 
@@ -127,7 +138,7 @@ wildcards. Delete the temporary setup key after configuring CORS.
 |---|---|
 | `DATABASE_URL` | Supabase session pooler URL |
 | `PUBLIC_BASE_URL` | `https://<service-name>.onrender.com` |
-| `CORS_ORIGINS` | `https://<project>.vercel.app` |
+| `CORS_ORIGINS` | `https://fileaway-share.vercel.app` |
 | `B2_ENDPOINT_URL` | `https://s3.<region>.backblazeb2.com` |
 | `B2_REGION` | B2 region, for example `us-west-004` |
 | `B2_BUCKET` | Private bucket name |
@@ -161,8 +172,9 @@ update the variables and redeploy after Render assigns the URL.
 VITE_API_BASE_URL=https://<service-name>.onrender.com
 ```
 
-4. Deploy, then add the resulting Vercel origin to `CORS_ORIGINS` on Render and to
-   the B2 CORS rule. Redeploy Render after changing environment variables.
+4. Deploy, then add the resulting Vercel origin, for example
+   `https://fileaway-share.vercel.app`, to `CORS_ORIGINS` on Render and to the B2
+   CORS rule. Redeploy Render after changing environment variables.
 
 Vercel Hobby is intended for non-commercial use and is subject to fair-use
 limits.
@@ -243,12 +255,19 @@ the metadata row so the next run retries instead of hiding the failure.
 
 ## Free-tier limits and limitations
 
-- 100 MB is the application upload limit. Each presigned PUT signs the exact
-  `Content-Length` and content type, so B2 rejects a body whose length or type
-  does not match the authorization. `/uploads/complete` performs a second `HEAD`
-  check for size before creating metadata. A mismatched object is deleted
-  immediately, and an object that is never completed is removed by the orphan
-  sweep after the grace period.
+- 100 MiB (104,857,600 bytes) is the application upload limit. The browser
+  rejects larger files before uploading, and each presigned PUT signs the
+  content type. `Content-Length` is deliberately not signed because browsers
+  cannot set it explicitly; signing it makes B2 fail the CORS preflight.
+  `/uploads/complete` performs a `HEAD` check before creating metadata. A
+  mismatched or oversized object is deleted immediately, and an object that is
+  never completed is removed by the orphan sweep after the grace period.
+- Because `Content-Length` is not part of the signature, B2 may store an
+  oversized body before `/uploads/complete` rejects it. The backend then deletes
+  it and does not create a share record. If deletion fails, the unreferenced
+  object is retried by orphan cleanup. A hard limit before upload would require
+  a proxy upload or a storage upload mechanism that supports a signed
+  `content-length-range`; this design does not provide that guarantee.
 - The authorize endpoint is public and has no authentication or rate limiting.
   A malicious client can request signed upload URLs and store data in B2 for up
   to 30 minutes, or longer if it never completes and the cleanup job is down.
@@ -297,10 +316,12 @@ endpoint.
 ## Troubleshooting
 
 **Direct upload fails in the browser.** Confirm the B2 CORS rule contains the
-exact Vercel origin and allows `PUT`, `GET`, `HEAD`, and `content-type`. Check the
-B2 key has `writeFiles`. A `403` from B2 can also mean the uploaded bytes do not
-exactly match the authorized `file_size` or `content_type`; do not change the file
-or headers between authorization and upload.
+exact origin `https://fileaway-share.vercel.app` and allows `PUT`, `GET`, `HEAD`,
+and `content-type`. Check the B2 key has `writeFiles`. A `403` mentioning
+`content-length` in the signed headers means the presigned URL was created by
+older code; deploy the current `app/storage.py`. Also do not change the file or
+its `Content-Type` between authorization and upload, because `Content-Type` is
+signed.
 
 **Share link returns 503.** The API could not create a presigned download URL.
 Check the B2 runtime key, bucket name, region, and endpoint on Render.

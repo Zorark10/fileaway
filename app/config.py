@@ -8,7 +8,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 load_dotenv(BASE_DIR / ".env")
 
-MAX_FILE_SIZE = 100 * 1024 * 1024
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 104,857,600 bytes (100 MiB)
 DEFAULT_PUBLIC_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_CORS_ORIGINS = (
     "http://localhost:5173",

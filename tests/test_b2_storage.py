@@ -317,6 +317,58 @@ def test_complete_rejects_oversized_stored_object(
         assert "oversized-object" not in storage.objects
 
 
+def test_oversized_upload_delete_failure_is_retried_by_orphan_cleanup(
+    test_environment,
+    monkeypatch,
+):
+    with b2_client(test_environment, monkeypatch) as (
+        client,
+        storage,
+        TestSessionLocal,
+        _,
+    ):
+        monkeypatch.setattr(main_module, "MAX_FILE_SIZE", 10)
+        monkeypatch.setattr(settings, "orphan_grace_seconds", 0)
+        token = issue_upload_token(
+            {
+                "stored_name": "oversized-retry",
+                "original_name": "big.bin",
+                "content_type": "application/octet-stream",
+                "file_size": 10,
+            },
+            secret="test-signing-secret",
+            ttl_seconds=600,
+        )
+        storage.objects["oversized-retry"] = b"A" * 11
+        storage.last_modified["oversized-retry"] = (
+            datetime.now(timezone.utc) - timedelta(seconds=1)
+        )
+        storage.delete_failures.add("oversized-retry")
+
+        completed = client.post(
+            "/uploads/complete",
+            json={"upload_token": token},
+        )
+
+        assert completed.status_code == 413
+        assert "oversized-retry" in storage.objects
+
+        db = TestSessionLocal()
+        try:
+            assert db.query(File).count() == 0
+        finally:
+            db.close()
+
+        storage.delete_failures.clear()
+        cleanup = client.post(
+            "/internal/cleanup",
+            headers={"X-Cleanup-Secret": "test-cleanup-secret"},
+        )
+
+        assert cleanup.status_code == 200
+        assert "oversized-retry" not in storage.objects
+
+
 def test_complete_rejects_expired_and_invalid_tokens(
     test_environment,
     monkeypatch,

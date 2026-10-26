@@ -174,7 +174,7 @@ def test_iter_objects_includes_hidden_delete_markers():
     assert objects[0].last_modified == hidden_time
 
 
-def test_presigned_upload_signs_exact_content_length():
+def test_presigned_upload_does_not_sign_content_length():
     storage = B2Storage(
         "https://s3.us-west-004.backblazeb2.com",
         "us-west-004",
@@ -186,9 +186,13 @@ def test_presigned_upload_signs_exact_content_length():
 
     url = storage.presign_upload("object", "text/plain", 123, 1800)
     query = parse_qs(urlparse(url).query)
+    signed_headers = query["X-Amz-SignedHeaders"][0].split(";")
 
-    assert "content-length" in query["X-Amz-SignedHeaders"][0].split(";")
-    assert "content-type" in query["X-Amz-SignedHeaders"][0].split(";")
+    # Browsers cannot set Content-Length manually. Signing it makes B2 reject
+    # the CORS preflight with "header 'content-length' is listed in signed
+    # headers, but is not present".
+    assert "content-length" not in signed_headers
+    assert "content-type" in signed_headers
 
 
 def test_presigned_upload_rejects_size_above_limit():
