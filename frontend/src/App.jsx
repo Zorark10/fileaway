@@ -483,6 +483,12 @@ export default function App() {
     }
   }, [result, fallbackCopy])
 
+  // ── Dismiss error and return to the workspace ────────────
+  const dismissError = useCallback(() => {
+    setError('')
+    setState(STATES.IDLE)
+  }, [])
+
   // ── Reset to initial state ───────────────────────────────
   const reset = useCallback(() => {
     cancelledRef.current = true
@@ -511,20 +517,21 @@ export default function App() {
 
       {/* ── HEADER ───────────────────────────────────────────────── */}
       <header className="w-full border-b border-border/80 bg-surface/80 backdrop-blur-sm sticky top-0 z-20">
-        <div className="max-w-[540px] mx-auto px-4 sm:px-6 h-13 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <BrandMark className="w-6 h-6" />
-            <div className="flex items-baseline gap-2">
-              <span className="font-medium text-sm tracking-tight text-ink">FileAway</span>
-              <span className="font-mono text-[10px] text-subtle tracking-wider uppercase border border-border/80 px-1.5 py-0.5 rounded bg-surface-sub">
+        <div className="mx-auto grid h-[60px] max-w-[588px] grid-cols-[1fr_auto_1fr] items-center px-4 sm:flex sm:h-[68px] sm:justify-between sm:px-6">
+          <div data-testid="header-brand" className="col-start-2 flex min-w-0 items-center justify-self-center gap-2.5 sm:col-auto sm:justify-self-auto sm:gap-3">
+            <BrandMark className="w-6 h-6 shrink-0 sm:w-7 sm:h-7" />
+            <div className="flex min-w-0 items-baseline gap-2">
+              <span className="whitespace-nowrap font-medium text-sm tracking-tight text-ink sm:text-[15px]">FileAway</span>
+              <span className="hidden whitespace-nowrap rounded border border-border/80 bg-surface-sub px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-subtle sm:inline-block">
                 Temporary Transit
               </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 text-xs text-subtle font-mono">
-            <span className="inline-block w-1.5 h-1.5 rounded-full bg-accent animate-pulse-soft" />
-            <span>24h Expiry &bull; 100 MB</span>
+          <div className="col-start-3 flex items-center justify-self-end gap-1.5 whitespace-nowrap font-mono text-[10px] text-subtle sm:col-auto sm:gap-2 sm:text-xs">
+            <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-accent animate-pulse-soft" />
+            <span className="sm:hidden">24h &middot; 100 MB</span>
+            <span className="hidden sm:inline">24h Expiry &bull; 100 MB</span>
           </div>
         </div>
       </header>
@@ -566,20 +573,20 @@ export default function App() {
             <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-accent/20 via-accent to-accent/20" />
 
             {/* ── INTEGRATED ERROR RIBBON ───────────────────────────── */}
-            {isError && (
+            {isError && error && (
               <div
                 role="alert"
                 className="mb-5 flex items-start justify-between gap-3 px-3.5 py-3 bg-error-muted border border-error-border rounded-lg animate-fade-slide-up"
               >
-                <div className="flex items-start gap-2.5 min-w-0">
+                <div className="flex min-w-0 items-start gap-2.5">
                   <IconAlertTriangle className="text-error w-4 h-4 mt-0.5 shrink-0" />
                   <p className="text-xs sm:text-sm text-error leading-relaxed break-words">{error}</p>
                 </div>
                 <button
                   type="button"
-                  onClick={() => setError('')}
+                  onClick={dismissError}
                   aria-label="Dismiss error notification"
-                  className="text-error/70 hover:text-error p-1 rounded hover:bg-error-border/40 transition-colors shrink-0 min-w-[28px] min-h-[28px] flex items-center justify-center cursor-pointer"
+                  className="text-error/70 hover:text-error p-1 rounded hover:bg-error-border/40 transition-colors shrink-0 min-w-[32px] min-h-[32px] flex items-center justify-center cursor-pointer"
                 >
                   <IconCross />
                 </button>
@@ -748,32 +755,30 @@ export default function App() {
 
                   /* ── STATE 2: FILE SELECTED (FILE DOSSIER) ── */
                   <div className="space-y-4 animate-fade-slide-up">
-                    <div className="p-4 bg-surface-sub border border-border rounded-lg flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-10 h-10 rounded-lg bg-accent-muted border border-accent-border/40 flex items-center justify-center shrink-0">
-                          <CategoryIcon category={fileMeta?.category} className="w-5 h-5 text-accent" />
-                        </div>
-
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-ink truncate" title={file.name}>
-                            {file.name}
-                          </p>
-                          <div className="flex items-center gap-2 mt-0.5 text-xs text-muted font-mono">
-                            <span>{formatBytes(file.size)}</span>
-                            <span className="text-subtle">&bull;</span>
-                            <span className="uppercase text-[11px] text-subtle">{fileMeta?.ext || 'FILE'}</span>
-                            <span className="text-subtle">&bull;</span>
-                            <span className="text-subtle text-[11px]">24h expiry</span>
-                          </div>
-                        </div>
+                    <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-3 rounded-lg border border-border bg-surface-sub p-4 sm:flex sm:items-center sm:justify-between sm:gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-accent-muted border border-accent-border/40 flex items-center justify-center shrink-0">
+                        <CategoryIcon category={fileMeta?.category} className="w-5 h-5 text-accent" />
                       </div>
 
-                      <div className="flex items-center gap-1.5 shrink-0">
+                      <div className="min-w-0 sm:flex-1">
+                        <p data-testid="selected-file-name" className="truncate text-sm font-medium text-ink" title={file.name}>
+                          {file.name}
+                        </p>
+                        <p data-testid="selected-file-meta" className="mt-1 truncate font-mono text-xs text-muted">
+                          {formatBytes(file.size)}
+                          <span aria-hidden="true" className="px-1.5 text-subtle">&bull;</span>
+                          {fileMeta?.ext || 'FILE'}
+                          <span aria-hidden="true" className="hidden px-1.5 text-subtle min-[360px]:inline">&bull;</span>
+                          <span className="hidden text-subtle min-[360px]:inline">24h expiry</span>
+                        </p>
+                      </div>
+
+                      <div className="col-span-2 flex items-center gap-2 sm:col-auto sm:shrink-0">
                         <button
                           type="button"
                           onClick={() => inputRef.current?.click()}
                           aria-label="Change selected file"
-                          className="btn-press px-2.5 py-1.5 rounded-md border border-border text-xs text-muted hover:text-ink hover:border-ink/30 bg-surface flex items-center gap-1 cursor-pointer min-h-[36px]"
+                          className="btn-press flex min-h-[44px] flex-1 items-center justify-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs text-muted hover:border-ink/30 hover:text-ink cursor-pointer sm:min-h-[36px] sm:flex-none"
                         >
                           <IconRefresh />
                           <span>Change</span>
@@ -782,7 +787,7 @@ export default function App() {
                           type="button"
                           onClick={() => { setFile(null); if (inputRef.current) inputRef.current.value = '' }}
                           aria-label="Remove selected file"
-                          className="btn-press p-2 rounded-md border border-border text-xs text-subtle hover:text-error hover:border-error/30 bg-surface cursor-pointer min-h-[36px] min-w-[36px] flex items-center justify-center"
+                          className="btn-press flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-border bg-surface p-2 text-xs text-subtle hover:border-error/30 hover:text-error cursor-pointer sm:min-h-[36px] sm:min-w-[36px]"
                         >
                           <IconCross />
                         </button>
@@ -872,10 +877,10 @@ export default function App() {
               <span>FileAway</span>
             </div>
 
-            <div className="flex items-center gap-3 text-[11px] text-subtle text-center sm:text-right">
-              <span>Files expire after 24 hours</span>
-              <span>&bull;</span>
-              <span>Maximum 100 MB</span>
+            <div className="flex flex-col items-center gap-0.5 text-[11px] text-subtle text-center min-[360px]:flex-row min-[360px]:gap-3 sm:justify-end sm:text-right">
+              <span className="whitespace-nowrap">Files expire after 24 hours</span>
+              <span aria-hidden="true" className="hidden min-[360px]:inline">&bull;</span>
+              <span className="whitespace-nowrap">Maximum 100 MB</span>
             </div>
           </div>
 
