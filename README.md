@@ -85,6 +85,7 @@ fileaway/
 │   ├── README.md           # $0 deployment guide
 │   ├── configure_b2_cors.py
 │   └── legacy-oracle/      # Archived Oracle Cloud setup
+├── fix_b2_cors.py          # Diagnose and safely repair B2 Native CORS
 ├── render.yaml
 ├── requirements.txt
 └── .env.example
@@ -216,7 +217,8 @@ free-tier limitations.
 The short version:
 
 1. Create a Supabase project and use its session pooler URL.
-2. Create a private B2 bucket and configure CORS for the Vercel origin.
+2. Create a private B2 bucket and run `fix_b2_cors.py` to add the Vercel origin
+   through the B2 Native API.
 3. Deploy the API on Render with `render.yaml` and the B2/Supabase secrets.
 4. Deploy `frontend/` on Vercel with `VITE_API_BASE_URL`.
 5. Add the `CLEANUP_URL` and `CLEANUP_SECRET` GitHub Actions secrets.

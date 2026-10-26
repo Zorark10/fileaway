@@ -93,9 +93,17 @@ The runtime key is used on Render only. It cannot change bucket CORS settings.
 
 ### Configure CORS
 
-The browser uploads directly to B2, so B2 must allow the Vercel origin. Create a
-temporary setup key with `writeBuckets` and `writeBucketCors` capabilities, then
-run the helper from the project root with the B2 variables set:
+The browser uploads directly to B2, so B2 must allow the Vercel origin with a
+`PUT` preflight and the `content-type` request header. B2 keeps S3-compatible
+and Native API CORS rules separately. Once a bucket has dashboard/Native rules,
+the S3 `PutBucketCors` API rejects writes with `InvalidRequest: The bucket
+contains B2 Native CORS rules. Please use B2 Native API instead.` The helper
+therefore reads and updates CORS through the Native API (`b2_list_buckets` and
+`b2_update_bucket`), so it sees the same rules the dashboard shows.
+
+Create a temporary setup key with `listBuckets` and `writeBuckets` access. If B2
+rejects a bucket-restricted key for the update, use an unrestricted key for this
+one-time change. Then run the root helper from the project root:
 
 ```powershell
 python -m venv .venv
@@ -107,25 +115,28 @@ $env:B2_REGION = "us-west-004"
 $env:B2_BUCKET = "your-bucket"
 $env:B2_SETUP_KEY_ID = "your-setup-key-id"
 $env:B2_SETUP_APP_KEY = "your-setup-application-key"
-.\.venv\Scripts\python.exe deployment\configure_b2_cors.py `
-  --origin "https://fileaway-share.vercel.app"
+
+.\.venv\Scripts\python.exe fix_b2_cors.py
+.\.venv\Scripts\python.exe fix_b2_cors.py --apply
 ```
 
-The rule allows `GET`, `PUT`, and `HEAD`, the exact origin
-`https://fileaway-share.vercel.app`, and the `content-type` request header, then
-caches the preflight for one hour. Add each Vercel preview or custom origin with
-another `--origin` flag. Origins must be exact; CORS does not support subdomain
-wildcards. Delete the temporary setup key after configuring CORS.
+The first command is a dry run. It authenticates with the setup key, lists the
+complete Native API CORS rules, diagnoses the exact origin, `s3_put`
+operation, and `content-type` header, and sends a harmless live `OPTIONS` probe
+without writing anything. `--apply` sends `b2_update_bucket` with the complete
+existing rule list plus one new rule, so every existing rule is preserved. The
+update payload only includes `corsRules` (and the bucket revision), leaving
+bucket type, info, lifecycle, encryption, and object-lock settings untouched.
+The script then re-reads the rules and repeats the probe to verify the result.
+It never edits or removes existing rules.
 
-To verify the rule without changing it, use a key that can read bucket settings:
+The production defaults are already the FileAway origin, bucket, endpoint, and
+region, so the environment variables only need to match your bucket. Override
+them with `--origin`, `--bucket`, `--endpoint`, `--region`, or `--max-age` as
+needed. Delete the temporary setup key after configuring CORS.
 
-```powershell
-python -c "import boto3, os; c=boto3.client('s3', endpoint_url=os.environ['B2_ENDPOINT_URL'], region_name=os.environ['B2_REGION'], aws_access_key_id=os.environ['B2_SETUP_KEY_ID'], aws_secret_access_key=os.environ['B2_SETUP_APP_KEY']); print(c.get_bucket_cors(Bucket=os.environ['B2_BUCKET']))"
-```
-
-Confirm the result includes `https://fileaway-share.vercel.app` in
-`AllowedOrigins`, `PUT` in `AllowedMethods`, and `content-type` in
-`AllowedHeaders`.
+`deployment/configure_b2_cors.py` is the older overwrite helper. Use
+`fix_b2_cors.py` for diagnosis and safe repair.
 
 ## 3. Deploy the API on Render
 
@@ -317,14 +328,16 @@ endpoint.
 
 ## Troubleshooting
 
-**Direct upload fails in the browser.** Confirm the B2 CORS rule contains the
-exact origin `https://fileaway-share.vercel.app` and allows `PUT`, `GET`, `HEAD`,
-and `content-type`. Check the B2 key has `writeFiles`. A `403` saying a header
-such as `content-length` or `content-type` "is listed in signed headers, but is
-not present" is a preflight failure: the presigned URL was created by older code.
-Deploy the current `app/storage.py`, which signs only `host`. The frontend must
-still send the `Content-Type` returned by `/uploads/authorize`; a type mismatch
-is rejected by `/uploads/complete`.
+**Direct upload fails in the browser.** Run `python fix_b2_cors.py` and then
+`python fix_b2_cors.py --apply` as described in the CORS section. Confirm the
+result contains the exact origin `https://fileaway-share.vercel.app`, `PUT`, and
+`content-type`, and that the live probe is allowed. Check that the runtime B2 key
+has `writeFiles`. A `403` saying a header such as `content-length` or
+`content-type` "is listed in signed headers, but is not present" is a preflight
+failure: the presigned URL was created by older code. Deploy the current
+`app/storage.py`, which signs only `host`. The frontend must still send the
+`Content-Type` returned by `/uploads/authorize`; a type mismatch is rejected by
+`/uploads/complete`.
 
 **Share link returns 503.** The API could not create a presigned download URL.
 Check the B2 runtime key, bucket name, region, and endpoint on Render.
