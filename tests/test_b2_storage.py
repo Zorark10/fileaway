@@ -1,13 +1,14 @@
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
 
 import app.main as main_module
 from app.config import settings
 from app.models import File
-from app.storage import ObjectNotFound, StorageError, StoredObject
+from app.storage import B2Storage, ObjectNotFound, StorageError, StoredObject
 from app.upload_tokens import issue_upload_token, verify_upload_token
 
 
@@ -57,6 +58,7 @@ class FakeStorage:
                 stored_name,
                 datetime.now(timezone.utc),
             ),
+            content_type=self.content_types.get(stored_name),
         )
 
     def delete_object(self, stored_name: str) -> None:
@@ -141,6 +143,76 @@ def test_authorize_returns_direct_upload_in_b2_mode(test_environment, monkeypatc
         assert token["file_size"] == 11
         assert storage.objects == {}
         assert list(storage.upload_lengths.values()) == [11]
+
+
+class SigningFakeStorage(FakeStorage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.signer = B2Storage(
+            "https://s3.eu-central-003.backblazeb2.com",
+            "eu-central-003",
+            "test-bucket",
+            "key-id",
+            "app-key",
+            "uploads/",
+        )
+
+    def presign_upload(
+        self,
+        stored_name: str,
+        content_type: str,
+        content_length: int,
+        expires_in: int,
+    ) -> str:
+        self.content_types[stored_name] = content_type
+        self.upload_lengths[stored_name] = content_length
+        return self.signer.presign_upload(
+            stored_name,
+            content_type,
+            content_length,
+            expires_in,
+        )
+
+
+def test_authorization_headers_match_browser_put_request(
+    test_environment,
+    monkeypatch,
+):
+    signed_storage = SigningFakeStorage()
+    with b2_client(
+        test_environment,
+        monkeypatch,
+        fake=signed_storage,
+    ) as (client, _, _, _):
+        response = _authorize(
+            client,
+            content_type="application/pdf",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        query = parse_qs(urlparse(data["upload_url"]).query)
+        signed_headers = set(
+            query["X-Amz-SignedHeaders"][0].split(";")
+        )
+        browser_headers = {
+            name.lower(): value
+            for name, value in data["headers"].items()
+        }
+
+        # OPTIONS cannot carry Content-Type or Content-Length. B2 validates
+        # signed headers on the preflight, so only host may be signed.
+        assert "content-type" not in signed_headers
+        assert "content-length" not in signed_headers
+        assert signed_headers <= set(browser_headers) | {"host"}
+
+        # The PUT may still send Content-Type, and it must match the token.
+        assert browser_headers["content-type"] == "application/pdf"
+        token = verify_upload_token(
+            data["upload_token"],
+            "test-signing-secret",
+        )
+        assert token["content_type"] == browser_headers["content-type"]
 
 
 def test_authorize_falls_back_to_proxy_in_local_mode(client):
@@ -269,6 +341,40 @@ def test_complete_rejects_size_mismatch_and_removes_object(
             "test-signing-secret",
         )["stored_name"]
         storage.objects[stored_name] = b"short"
+
+        completed = client.post(
+            "/uploads/complete",
+            json={"upload_token": token},
+        )
+
+        assert completed.status_code == 400
+        assert stored_name not in storage.objects
+
+        db = TestSessionLocal()
+        try:
+            assert db.query(File).count() == 0
+        finally:
+            db.close()
+
+
+def test_complete_rejects_content_type_mismatch_and_removes_object(
+    test_environment,
+    monkeypatch,
+):
+    with b2_client(test_environment, monkeypatch) as (
+        client,
+        storage,
+        TestSessionLocal,
+        _,
+    ):
+        response = _authorize(client, size=11, content_type="application/pdf")
+        token = response.json()["upload_token"]
+        stored_name = verify_upload_token(
+            token,
+            "test-signing-secret",
+        )["stored_name"]
+        storage.objects[stored_name] = b"hello world"
+        storage.content_types[stored_name] = "text/html"
 
         completed = client.post(
             "/uploads/complete",

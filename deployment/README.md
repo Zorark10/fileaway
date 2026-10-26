@@ -22,10 +22,10 @@ Browser
   |-- POST /uploads/authorize -----------> Render API
   |<-- presigned B2 PUT + upload token ----|
   |
-  |-- PUT file ---------------------------> Backblaze B2 (signed Content-Type; size checked after)
+  |-- PUT file ---------------------------> Backblaze B2 (host-only signature; size/type checked after)
   |
   |-- POST /uploads/complete ------------> Render API
-  |                                         |-- HEAD object, verify size
+  |                                         |-- HEAD object, verify size and type
   |                                         |-- insert metadata in Supabase
   |<-- share URL ---------------------------|
   |
@@ -256,12 +256,14 @@ the metadata row so the next run retries instead of hiding the failure.
 ## Free-tier limits and limitations
 
 - 100 MiB (104,857,600 bytes) is the application upload limit. The browser
-  rejects larger files before uploading, and each presigned PUT signs the
-  content type. `Content-Length` is deliberately not signed because browsers
-  cannot set it explicitly; signing it makes B2 fail the CORS preflight.
-  `/uploads/complete` performs a `HEAD` check before creating metadata. A
-  mismatched or oversized object is deleted immediately, and an object that is
-  never completed is removed by the orphan sweep after the grace period.
+  rejects larger files before uploading. Each presigned PUT signs only `host`
+  because B2 validates signed headers on the OPTIONS preflight, which cannot
+  carry `Content-Type` or `Content-Length`; signing either makes the preflight
+  fail. The browser still sends the authorized content type on the PUT, and CORS
+  allows it. `/uploads/complete` performs a `HEAD` check for both size and
+  content type before creating metadata. A mismatched object is deleted
+  immediately, and an object that is never completed is removed by the orphan
+  sweep after the grace period.
 - Because `Content-Length` is not part of the signature, B2 may store an
   oversized body before `/uploads/complete` rejects it. The backend then deletes
   it and does not create a share record. If deletion fails, the unreferenced
@@ -317,11 +319,12 @@ endpoint.
 
 **Direct upload fails in the browser.** Confirm the B2 CORS rule contains the
 exact origin `https://fileaway-share.vercel.app` and allows `PUT`, `GET`, `HEAD`,
-and `content-type`. Check the B2 key has `writeFiles`. A `403` mentioning
-`content-length` in the signed headers means the presigned URL was created by
-older code; deploy the current `app/storage.py`. Also do not change the file or
-its `Content-Type` between authorization and upload, because `Content-Type` is
-signed.
+and `content-type`. Check the B2 key has `writeFiles`. A `403` saying a header
+such as `content-length` or `content-type` "is listed in signed headers, but is
+not present" is a preflight failure: the presigned URL was created by older code.
+Deploy the current `app/storage.py`, which signs only `host`. The frontend must
+still send the `Content-Type` returned by `/uploads/authorize`; a type mismatch
+is rejected by `/uploads/complete`.
 
 **Share link returns 503.** The API could not create a presigned download URL.
 Check the B2 runtime key, bucket name, region, and endpoint on Render.

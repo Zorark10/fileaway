@@ -40,6 +40,7 @@ class StoredObject:
     key: str
     size: int
     last_modified: datetime
+    content_type: str | None = None
 
 
 def _as_utc(value: datetime | None) -> datetime:
@@ -121,11 +122,11 @@ class B2Storage:
                 Params={
                     "Bucket": self.bucket,
                     "Key": self.object_key(stored_name),
-                    "ContentType": content_type,
-                    # ContentLength is intentionally not signed. Browsers
-                    # cannot set it manually, and B2 rejects a preflight that
-                    # lists a signed header the browser is not allowed to send.
-                    # The actual size is enforced by /uploads/complete.
+                    # Only the host is signed. B2 validates X-Amz-SignedHeaders
+                    # on the CORS OPTIONS preflight, which cannot carry
+                    # Content-Type or Content-Length. Signing either header
+                    # makes B2 reject the preflight with InvalidRequest.
+                    # /uploads/complete verifies the actual size and type.
                 },
                 ExpiresIn=expires_in,
                 HttpMethod="PUT",
@@ -175,6 +176,7 @@ class B2Storage:
             key=key,
             size=int(response.get("ContentLength", 0)),
             last_modified=response.get("LastModified") or datetime.min,
+            content_type=response.get("ContentType"),
         )
 
     def _list_versions(

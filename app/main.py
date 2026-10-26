@@ -420,6 +420,22 @@ def complete_upload(
             detail="Uploaded file size does not match the authorized size",
         )
 
+    if stored_object.content_type is not None and (
+        stored_object.content_type.strip().lower()
+        != content_type.strip().lower()
+    ):
+        try:
+            storage.delete_object(stored_name)
+        except StorageError:
+            logger.exception(
+                "Could not remove content-type mismatch; "
+                "orphan cleanup will retry"
+            )
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file type does not match the authorized type",
+        )
+
     new_file = _new_file_record(
         original_name=original_name,
         stored_name=stored_name,

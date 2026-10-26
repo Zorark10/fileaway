@@ -34,23 +34,27 @@ PostgreSQL for metadata, and Backblaze B2 for files.
 
 1. The browser asks `POST /uploads/authorize` for permission to upload.
 2. With B2 enabled, the API returns a 30-minute presigned PUT URL, an upload
-   token, and the authorized content type. The URL signs `Content-Type` but not
-   `Content-Length`, because browsers cannot set `Content-Length` manually.
-3. The browser uploads the file directly to B2, sending only the headers the
-   presigned URL signs.
+   token, and the authorized content type. Only the `host` header is signed.
+   B2 validates signed headers during the browser's OPTIONS preflight, which
+   cannot carry `Content-Type` or `Content-Length`; signing either header makes
+   B2 reject the preflight with `InvalidRequest`.
+3. The browser uploads the file directly to B2, sending the returned
+   `Content-Type` header on the PUT request. CORS allows that header.
 4. The browser calls `POST /uploads/complete`. The API verifies the token, HEADs
-   the object, checks that its actual size matches the declared size and is no
-   more than 104,857,600 bytes, and then stores metadata in PostgreSQL. A
-   mismatched or oversized object is permanently deleted, including all B2
-   versions and delete markers. If that deletion fails, no share record is
-   created and the orphan sweep retries it later.
+   the object, checks that its actual size matches the declared size, is no more
+   than 104,857,600 bytes, and that its stored content type matches the
+   authorized type. It then stores metadata in PostgreSQL. A mismatched,
+   wrong-type, or oversized object is permanently deleted, including all B2
+   versions and delete markers. If deletion fails, no share record is created
+   and the orphan sweep retries it later.
 5. A share URL is returned.
 
 The 100 MiB check happens before upload in the browser, but a modified client
-can bypass it. Because `Content-Length` is no longer signed, B2 can accept an
-oversized body before the backend rejects it during completion. The backend
-then deletes it. A stricter option is a proxy upload, or an upload method that
-enforces `content-length-range` at storage time; neither is used here.
+can bypass it. Because `Content-Length` is not signed, B2 can accept an oversized
+body before the backend rejects it during completion. The backend then deletes
+it. Content type is also checked by the completion HEAD rather than by the
+signature. A stricter option is a proxy upload, or an upload method that enforces
+`content-length-range` at storage time; neither is used here.
 
 In local mode, `POST /uploads/authorize` returns `{"mode":"proxy"}` and the
 frontend falls back to the multipart `POST /upload` endpoint, keeping files in
